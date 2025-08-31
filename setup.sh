@@ -64,7 +64,114 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
-# Get system info
+# Install yt-dlp with multiple fallback methods
+install_yt_dlp() {
+    if command_exists yt-dlp; then
+        show_success "yt-dlp is already installed"
+        return 0
+    fi
+    
+    local os_type=$(get_system_info)
+    
+    # Method 1: Try package manager first (most reliable)
+    if [ "$os_type" = "linux" ]; then
+        show_info "Trying to install yt-dlp via apt..."
+        if sudo apt install -y yt-dlp 2>/dev/null; then
+            show_success "yt-dlp installed via apt"
+            return 0
+        fi
+        
+        # Method 2: Try pipx (recommended for user applications)
+        show_info "Trying to install yt-dlp via pipx..."
+        if command_exists pipx; then
+            if pipx install yt-dlp 2>/dev/null; then
+                show_success "yt-dlp installed via pipx"
+                return 0
+            fi
+        else
+            # Install pipx first
+            show_info "Installing pipx first..."
+            if sudo apt install -y pipx 2>/dev/null; then
+                if pipx install yt-dlp 2>/dev/null; then
+                    show_success "yt-dlp installed via pipx"
+                    return 0
+                fi
+            fi
+        fi
+        
+        # Method 3: Try pip with virtual environment
+        if command_exists python3; then
+            show_info "Creating virtual environment for yt-dlp..."
+            local venv_path="$HOME/.yt-dlp-venv"
+            
+            # Ensure python3-full is installed for venv
+            sudo apt install -y python3-full python3-venv 2>/dev/null
+            
+            # Remove existing venv if corrupted
+            [ -d "$venv_path" ] && rm -rf "$venv_path"
+            
+            # Create fresh virtual environment
+            if python3 -m venv "$venv_path" 2>/dev/null; then
+                show_info "Virtual environment created successfully"
+                
+                # Install directly using venv pip (no activation needed)
+                if "$venv_path/bin/pip" install --upgrade pip >/dev/null 2>&1 && "$venv_path/bin/pip" install yt-dlp >/dev/null 2>&1; then
+                    # Create wrapper script
+                    mkdir -p "$HOME/.local/bin"
+                    cat > "$HOME/.local/bin/yt-dlp" << 'EOF'
+#!/bin/bash
+VENV_PATH="$HOME/.yt-dlp-venv"
+if [ -f "$VENV_PATH/bin/yt-dlp" ]; then
+    "$VENV_PATH/bin/yt-dlp" "$@"
+else
+    echo "yt-dlp virtual environment not found. Please reinstall."
+    exit 1
+fi
+EOF
+                    chmod +x "$HOME/.local/bin/yt-dlp"
+                    
+                    # Add to PATH if not already there
+                    if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
+                        export PATH="$HOME/.local/bin:$PATH"
+                        echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc" 2>/dev/null || true
+                    fi
+                    
+                    show_success "yt-dlp installed in virtual environment"
+                    return 0
+                else
+                    show_warning "Failed to install yt-dlp in virtual environment"
+                fi
+            else
+                show_warning "Failed to create virtual environment"
+            fi
+        fi
+        
+        # Method 4: Direct download (last resort)
+        show_info "Trying direct download of yt-dlp..."
+        mkdir -p "$HOME/.local/bin"
+        if curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o "$HOME/.local/bin/yt-dlp" 2>/dev/null; then
+            chmod +x "$HOME/.local/bin/yt-dlp"
+            if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
+                export PATH="$HOME/.local/bin:$PATH"
+                echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc" 2>/dev/null || true
+            fi
+            show_success "yt-dlp downloaded directly"
+            return 0
+        fi
+        
+    elif [ "$os_type" = "mac" ]; then
+        # macOS installation
+        if command_exists brew; then
+            if brew install yt-dlp 2>/dev/null; then
+                show_success "yt-dlp installed via Homebrew"
+                return 0
+            fi
+        fi
+    fi
+    
+    show_warning "All yt-dlp installation methods failed"
+    return 1
+}
 get_system_info() {
     if [[ "$OSTYPE" == "linux-gnu"* ]]; then
         echo "linux"
@@ -86,7 +193,7 @@ install_dependencies() {
         sudo apt update && sudo apt upgrade -y || { handle_error "Failed to update packages"; return 1; }
         
         show_loading "Installing required packages" 5
-        sudo apt install curl iptables build-essential git wget lz4 jq make gcc postgresql-client nano automake autoconf tmux htop nvme-cli libgbm1 pkg-config libssl-dev tar clang bsdmainutils ncdu unzip libleveldb-dev libclang-dev ninja-build python3-pip -y || { handle_error "Failed to install packages"; return 1; }
+        sudo apt install curl iptables build-essential git wget lz4 jq make gcc postgresql-client nano automake autoconf tmux htop nvme-cli libgbm1 pkg-config libssl-dev tar clang bsdmainutils ncdu unzip libleveldb-dev libclang-dev ninja-build python3-pip python3-venv python3-full pipx -y || { handle_error "Failed to install packages"; return 1; }
     elif [ "$os_type" = "mac" ]; then
         show_info "Installing Homebrew if not present..."
         if ! command_exists brew; then
@@ -99,9 +206,7 @@ install_dependencies() {
     
     # Install yt-dlp for YouTube downloads
     show_loading "Installing yt-dlp for YouTube downloads" 2
-    if command_exists pip3; then
-        pip3 install yt-dlp || show_warning "Failed to install yt-dlp, YouTube download won't work"
-    fi
+    install_yt_dlp
     
     show_success "Dependencies installed successfully!"
 }
@@ -187,6 +292,9 @@ setup_user() {
 
 # Show credentials
 show_credentials() {
+    # Check if Pipe CLI is installed first
+    check_pipe_installation || return 1
+    
     show_banner
     echo -e "${CYAN}📋 Your Pipe CLI Credentials${NC}"
     echo "═══════════════════════════════════════"
@@ -205,6 +313,9 @@ show_credentials() {
 
 # Show referral info
 show_referral_info() {
+    # Check if Pipe CLI is installed first
+    check_pipe_installation || return 1
+    
     show_banner
     echo -e "${CYAN}🎁 Referral Information${NC}"
     echo "═══════════════════════════════════════"
@@ -226,7 +337,42 @@ show_referral_info() {
     read -p "Press Enter to continue..."
 }
 
-# Get file size in human readable format
+# Check if Pipe CLI is installed
+check_pipe_installation() {
+    if ! command_exists pipe; then
+        show_banner
+        echo -e "${RED}⚠️  Pipe Firestarter Node Not Installed!${NC}"
+        echo "═══════════════════════════════════════════════════════════"
+        echo
+        echo -e "${YELLOW}You need to install the Pipe Firestarter Node first before using this feature.${NC}"
+        echo
+        echo -e "${CYAN}What would you like to do?${NC}"
+        echo -e "${WHITE}1.${NC} 🛠️  Install Pipe Firestarter Node Now"
+        echo -e "${WHITE}2.${NC} 🔙 Return to Main Menu"
+        echo -e "${WHITE}3.${NC} ❌ Exit"
+        echo
+        read -p "Choice (1-3): " install_choice
+        
+        case $install_choice in
+            1)
+                install_pipe_firestarter
+                return 0
+                ;;
+            2)
+                return 1
+                ;;
+            3)
+                graceful_exit
+                ;;
+            *)
+                show_warning "Invalid choice. Returning to main menu..."
+                sleep 2
+                return 1
+                ;;
+        esac
+    fi
+    return 0
+}
 get_file_size() {
     local file_path="$1"
     if [ -f "$file_path" ]; then
@@ -242,13 +388,80 @@ get_file_size() {
 
 # Download YouTube video
 download_youtube() {
+    # Check if Pipe CLI is installed first
+    check_pipe_installation || return 1
+    
     show_banner
     echo -e "${CYAN}📺 YouTube Video Download${NC}"
     echo "═══════════════════════════════════════"
     
+    # Ensure yt-dlp is available - use simple direct method
     if ! command_exists yt-dlp; then
-        show_warning "yt-dlp not installed. Installing now..."
-        pip3 install yt-dlp || { handle_error "Failed to install yt-dlp"; return 1; }
+        show_warning "yt-dlp not found. Installing via multiple methods..."
+        
+        # Try apt first (most reliable on Ubuntu/Debian)
+        if sudo apt install -y yt-dlp 2>/dev/null; then
+            show_success "yt-dlp installed via apt"
+        # Try pipx next
+        elif command_exists pipx && pipx install yt-dlp 2>/dev/null; then
+            show_success "yt-dlp installed via pipx"
+        # Create virtual environment manually
+        elif command_exists python3; then
+            show_info "Creating virtual environment for yt-dlp..."
+            
+            # Install required packages
+            sudo apt install -y python3-full python3-venv 2>/dev/null
+            
+            # Create venv
+            local venv_path="$HOME/.yt-dlp-venv"
+            rm -rf "$venv_path" 2>/dev/null
+            
+            if python3 -m venv "$venv_path"; then
+                # Install using venv pip directly (no shell sourcing)
+                if "$venv_path/bin/pip" install --upgrade pip && "$venv_path/bin/pip" install yt-dlp; then
+                    # Create wrapper
+                    mkdir -p "$HOME/.local/bin"
+                    echo '#!/bin/bash' > "$HOME/.local/bin/yt-dlp"
+                    echo '"$HOME/.yt-dlp-venv/bin/yt-dlp" "$@"' >> "$HOME/.local/bin/yt-dlp"
+                    chmod +x "$HOME/.local/bin/yt-dlp"
+                    export PATH="$HOME/.local/bin:$PATH"
+                    show_success "yt-dlp installed in virtual environment"
+                else
+                    show_warning "Virtual environment installation failed"
+                fi
+            else
+                show_warning "Could not create virtual environment"
+            fi
+        # Direct download as last resort
+        elif curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o "$HOME/.local/bin/yt-dlp" 2>/dev/null; then
+            chmod +x "$HOME/.local/bin/yt-dlp"
+            export PATH="$HOME/.local/bin:$PATH"
+            show_success "yt-dlp downloaded directly"
+        else
+            show_warning "All installation methods failed"
+            echo -e "${YELLOW}Manual installation required:${NC}"
+            echo -e "${CYAN}sudo apt install yt-dlp${NC}"
+            echo -e "${CYAN}OR: pipx install yt-dlp${NC}"
+            echo -e "${CYAN}OR: python3 -m venv ~/.yt-dlp-venv && ~/.yt-dlp-venv/bin/pip install yt-dlp${NC}"
+            read -p "Press Enter to continue..."
+            return 1
+        fi
+        
+        # Check if installation worked
+        if ! command_exists yt-dlp; then
+            # Try to find it in common locations
+            if [ -f "$HOME/.local/bin/yt-dlp" ]; then
+                export PATH="$HOME/.local/bin:$PATH"
+            elif [ -f "$HOME/.yt-dlp-venv/bin/yt-dlp" ]; then
+                export PATH="$HOME/.yt-dlp-venv/bin:$PATH"
+            fi
+        fi
+        
+        # Final check
+        if ! command_exists yt-dlp; then
+            show_warning "yt-dlp not found in PATH. You may need to restart terminal."
+            return 1
+        fi
     fi
     
     echo -e "${YELLOW}Enter YouTube URL:${NC}"
@@ -272,17 +485,23 @@ download_youtube() {
         return 1
     fi
     
+    # Clean filename (remove special characters)
+    filename=$(echo "$filename" | sed 's/[^a-zA-Z0-9._-]/_/g')
+    
     local output_file
     local yt_format
+    local extra_args=""
     
     case $format_choice in
         1)
             output_file="$filename.mp4"
-            yt_format="best[ext=mp4]"
+            yt_format="best[height<=720]/best[ext=mp4]/best"
+            extra_args="--format-sort res:720"
             ;;
         2)
             output_file="$filename.mp3"
-            yt_format="bestaudio[ext=m4a]/best[ext=mp4]"
+            yt_format="bestaudio[ext=m4a]/bestaudio/best[ext=mp4]"
+            extra_args="--extract-audio --audio-format mp3"
             ;;
         *)
             handle_error "Invalid choice"
@@ -291,11 +510,78 @@ download_youtube() {
     esac
     
     show_loading "Downloading video" 3
+    echo -e "${CYAN}Attempting download with bot prevention...${NC}"
     
-    if [ "$format_choice" = "2" ]; then
-        yt-dlp -f "$yt_format" --extract-audio --audio-format mp3 -o "$output_file" "$youtube_url" || { handle_error "Download failed"; return 1; }
-    else
-        yt-dlp -f "$yt_format" -o "$output_file" "$youtube_url" || { handle_error "Download failed"; return 1; }
+    # Try multiple download strategies to avoid bot detection
+    local download_success=false
+    
+    # Strategy 1: Use user agent and bypass age gate
+    echo -e "${BLUE}🤖 Trying with user agent bypass...${NC}"
+    if yt-dlp \
+        --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+        --extractor-args "youtube:skip=dash,hls" \
+        --no-warnings \
+        -f "$yt_format" $extra_args \
+        -o "$output_file" \
+        "$youtube_url" 2>/dev/null; then
+        download_success=true
+    fi
+    
+    # Strategy 2: Try with different extractor args
+    if [ "$download_success" = false ]; then
+        echo -e "${BLUE}🔄 Trying alternative method...${NC}"
+        if yt-dlp \
+            --extractor-args "youtube:player_client=web,web_creator" \
+            --user-agent "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36" \
+            --no-warnings \
+            -f "$yt_format" $extra_args \
+            -o "$output_file" \
+            "$youtube_url" 2>/dev/null; then
+            download_success=true
+        fi
+    fi
+    
+    # Strategy 3: Try mobile client
+    if [ "$download_success" = false ]; then
+        echo -e "${BLUE}📱 Trying mobile client...${NC}"
+        if yt-dlp \
+            --extractor-args "youtube:player_client=mweb" \
+            --no-warnings \
+            -f "$yt_format" $extra_args \
+            -o "$output_file" \
+            "$youtube_url" 2>/dev/null; then
+            download_success=true
+        fi
+    fi
+    
+    # Strategy 4: Basic download (last resort)
+    if [ "$download_success" = false ]; then
+        echo -e "${BLUE}🎯 Trying basic download...${NC}"
+        if yt-dlp \
+            --no-warnings \
+            -f "worst[ext=mp4]/worst" \
+            -o "$output_file" \
+            "$youtube_url" 2>/dev/null; then
+            download_success=true
+            show_warning "Downloaded in lower quality due to restrictions"
+        fi
+    fi
+    
+    if [ "$download_success" = false ]; then
+        echo -e "${RED}❌ All download methods failed${NC}"
+        echo -e "${YELLOW}This could be due to:${NC}"
+        echo "• YouTube bot detection"
+        echo "• Video restrictions (private/age-gated)"
+        echo "• Network issues"
+        echo "• Video no longer available"
+        echo
+        echo -e "${CYAN}💡 Troubleshooting options:${NC}"
+        echo "1. Try a different video URL"
+        echo "2. Check if video is public and available"
+        echo "3. Try again later (YouTube may be blocking requests temporarily)"
+        echo "4. Use browser to download manually, then upload via option 3"
+        read -p "Press Enter to continue..."
+        return 1
     fi
     
     if [ -f "$output_file" ]; then
@@ -321,6 +607,11 @@ download_youtube() {
 upload_file_to_pipe() {
     local file_path="$1"
     local file_name="$2"
+    
+    # Only check installation if called directly (not from other functions)
+    if [ -z "$1" ] && [ -z "$2" ]; then
+        check_pipe_installation || return 1
+    fi
     
     if [ -z "$file_path" ] || [ -z "$file_name" ]; then
         show_banner
@@ -398,6 +689,9 @@ upload_file_to_pipe() {
 
 # Swap SOL for PIPE
 swap_sol_for_pipe() {
+    # Check if Pipe CLI is installed first
+    check_pipe_installation || return 1
+    
     show_banner
     echo -e "${CYAN}💱 Swap SOL for PIPE${NC}"
     echo "═══════════════════════════════════════"
@@ -433,6 +727,9 @@ swap_sol_for_pipe() {
 
 # Show uploaded files info
 show_uploaded_files() {
+    # Check if Pipe CLI is installed first
+    check_pipe_installation || return 1
+    
     show_banner
     echo -e "${CYAN}📁 Uploaded Files Information${NC}"
     echo "═══════════════════════════════════════"
